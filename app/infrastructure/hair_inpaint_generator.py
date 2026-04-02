@@ -99,9 +99,8 @@ class HairInpaintGenerator:
         # Direct description of the desired OUTPUT, not instructions to the model.
         core = (
             "same person same face same skin tone, "
-            "full head of hair 6 months after FUE hair transplant, "
-            "natural grown out result 5-6cm length, "
-            "natural hairline above forehead, scalp completely covered, "
+            "full dense natural hair after FUE hair transplant, "
+            "natural hairline above forehead, scalp completely covered with hair, "
             "photorealistic portrait, professional photo"
         )
         if self.settings.strong_fill:
