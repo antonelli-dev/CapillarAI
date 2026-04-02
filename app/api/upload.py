@@ -8,6 +8,10 @@ router = APIRouter()
 
 @router.post("/upload")
 async def upload(file: UploadFile = File(...)):
+    """
+    Valida la foto tal cual se subiría a /generate (misma comprobación facial sobre la original).
+    No aplica rembg aquí: /generate decide fondo tras validar.
+    """
     img = await read_image_bgr(file)
 
     try:

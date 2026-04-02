@@ -7,7 +7,12 @@ from diffusers import StableDiffusionInpaintPipeline
 from PIL import Image
 
 from app.config import Settings
-from app.infrastructure.hair_mask import build_hair_mask_from_landmarks, estimate_hair_loss_severity
+from app.infrastructure.hair_mask import (
+    analyze_scalp_lighting,
+    build_hair_mask_from_landmarks,
+    build_hairline_band_mask,
+)
+from app.infrastructure.hair_preprocess import soften_specular_bgr
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +86,6 @@ class HairInpaintGenerator:
                     e,
                 )
 
-    # CLIP (SD 1.5) admite como máximo 77 tokens; prompts largos se truncan al final.
     _MAX_PROMPT_WORDS = 58
 
     def _clip_safe(self, text: str) -> str:
@@ -96,9 +100,9 @@ class HairInpaintGenerator:
         return " ".join(words[: self._MAX_PROMPT_WORDS])
 
     def _build_prompt(self) -> str:
-        # Direct description of the desired OUTPUT, not instructions to the model.
         core = (
             "same person same face same skin tone, "
+            "hair color matching temples and sideburns, consistent natural tone, "
             "full head of hair 12 months after FUE hair transplant, "
             "natural grown out result 8-10cm length, "
             "natural hairline above forehead, scalp completely covered, "
@@ -115,11 +119,39 @@ class HairInpaintGenerator:
         return (
             "bald, balding, thinning, bald spot, receding hairline, no hair, "
             "sparse hair, visible scalp, different person, changed face, "
-            "wig, fake hair, pluggy grafts, cartoon, watermark, low quality"
+            "wig, fake hair, pluggy grafts, cartoon, watermark, low quality, "
+            "green tint, teal cast, gray green, muddy color, color cast, "
+            "unnatural hair color, wrong hair color"
+        )
+
+    def _hairline_refinement_prompt(self) -> str:
+        return self._clip_safe(
+            "same person same face, soft natural hairline blend forehead to hair, "
+            "seamless transition, photorealistic, subtle hair strands"
         )
 
     def generate(self, image_bgr: np.ndarray, face_landmarks) -> Image.Image:
-        pil = Image.fromarray(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
+        lighting = analyze_scalp_lighting(image_bgr, face_landmarks)
+        severity = lighting.severity
+
+        # CLAHE helps specular outdoor shots but shifts color on extreme alopecia — skip then.
+        _CLAHE_SEVERITY_MAX = 0.85
+        work_bgr = image_bgr
+        if lighting.hard_lighting and severity <= _CLAHE_SEVERITY_MAX:
+            work_bgr = soften_specular_bgr(image_bgr)
+            logger.info(
+                "Luz dura detectada: preprocesado CLAHE suave (severidad %.2f ≤ %.2f)",
+                severity,
+                _CLAHE_SEVERITY_MAX,
+            )
+        elif lighting.hard_lighting and severity > _CLAHE_SEVERITY_MAX:
+            logger.info(
+                "Luz dura pero severidad %.2f > %.2f: CLAHE omitido (evitar deriva de color)",
+                severity,
+                _CLAHE_SEVERITY_MAX,
+            )
+
+        pil = Image.fromarray(cv2.cvtColor(work_bgr, cv2.COLOR_BGR2RGB))
         orig_size = pil.size
 
         w, h = pil.size
@@ -128,9 +160,6 @@ class HairInpaintGenerator:
             scale = max_side / max(w, h)
             w, h = int(w * scale), int(h * scale)
             pil = pil.resize((w, h), _LANCZOS)
-
-        # Measure severity on the original full-res image for better accuracy.
-        severity = estimate_hair_loss_severity(image_bgr, face_landmarks)
 
         mask = build_hair_mask_from_landmarks(w, h, face_landmarks, severity=severity)
 
@@ -151,8 +180,6 @@ class HairInpaintGenerator:
 
         raw_strength = self.settings.inpaint_strength
         strength = max(raw_strength, self.settings.min_inpaint_strength)
-        # For severe or moderate loss force near-maximum strength so the model
-        # fully overrides sparse/thin hair instead of preserving it.
         if severity >= 0.45:
             strength = max(strength, 0.97)
         if strength > raw_strength:
@@ -178,6 +205,54 @@ class HairInpaintGenerator:
             call_kwargs["ip_adapter_image"] = pil
 
         result = self.pipe(**call_kwargs).images[0]
+
+        # Second pass: hairline band — skip on huge masks or extreme severity (reduces color drift).
+        _REFINE_SEVERITY_MAX = 0.85
+        _REFINE_MFRAC_MAX = 0.22
+        hairline_pixels = 0
+        if (
+            lighting.hard_lighting
+            and mfrac >= 0.12
+            and mfrac <= _REFINE_MFRAC_MAX
+            and severity <= _REFINE_SEVERITY_MAX
+        ):
+            r_small = result.resize((w, h), _LANCZOS)
+            band = build_hairline_band_mask(mask_arr)
+            hairline_pixels = int(np.sum(band > 127))
+            if hairline_pixels >= 800:
+                logger.info(
+                    "Segundo paso línea de pelo: %s píxeles (refinación borde)",
+                    hairline_pixels,
+                )
+                band_pil = Image.fromarray(band).convert("L")
+                refine_steps = max(32, self.settings.num_inference_steps // 2)
+                refine_kwargs = {
+                    "prompt": self._hairline_refinement_prompt(),
+                    "negative_prompt": (
+                        "harsh edge, visible line, different person, wig, bald, "
+                        "cartoon, low quality, green tint, muddy color, color cast"
+                    ),
+                    "image": r_small,
+                    "mask_image": band_pil,
+                    "strength": 0.44,
+                    "num_inference_steps": refine_steps,
+                    "guidance_scale": min(8.5, self.settings.guidance_scale),
+                    "num_images_per_prompt": 1,
+                    "padding_mask_crop": 96,
+                }
+                if self._ip_adapter_loaded:
+                    refine_kwargs["ip_adapter_image"] = r_small
+                result = self.pipe(**refine_kwargs).images[0]
+            else:
+                logger.debug("Segundo paso omitido: banda línea pelo demasiado pequeña")
+        elif lighting.hard_lighting and (
+            mfrac > _REFINE_MFRAC_MAX or severity > _REFINE_SEVERITY_MAX
+        ):
+            logger.info(
+                "Segundo paso línea de pelo omitido (mfrac=%.2f severidad=%.2f; evitar deriva de color)",
+                mfrac,
+                severity,
+            )
 
         if result.size != orig_size:
             result = result.resize(orig_size, _LANCZOS)

@@ -1,9 +1,10 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.auth import require_api_key
 from app.api.generate import router as generate_router
 from app.api.upload import router as upload_router
 from app.config import get_settings
@@ -23,6 +24,10 @@ async def lifespan(app: FastAPI):
     log.info("MediaPipe listo")
     get_generator()
     log.info("Modelo listo | perfil=%s", settings.profile)
+    if not settings.api_keys:
+        log.warning(
+            "API_KEYS vacío: /upload y /generate sin autenticación (solo desarrollo)"
+        )
 
     yield
 
@@ -57,5 +62,5 @@ def health():
     }
 
 
-app.include_router(upload_router)
-app.include_router(generate_router)
+app.include_router(upload_router, dependencies=[Depends(require_api_key)])
+app.include_router(generate_router, dependencies=[Depends(require_api_key)])

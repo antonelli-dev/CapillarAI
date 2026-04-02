@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -23,6 +24,8 @@ class Settings:
     strong_fill: bool
     min_inpaint_strength: float
     profile: str
+    # Comma-separated. Empty = no auth on /upload and /generate (development only).
+    api_keys: str
 
 
 @lru_cache
@@ -47,4 +50,5 @@ def get_settings() -> Settings:
         strong_fill=pname == "maximum_fill",
         min_inpaint_strength=prof["min_inpaint_strength"],
         profile=pname,
+        api_keys=os.environ.get("API_KEYS", "").strip(),
     )
