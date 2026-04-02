@@ -1,4 +1,3 @@
-import cv2
 from PIL import Image
 
 from app.ports.image_generator import ImageGeneratorPort

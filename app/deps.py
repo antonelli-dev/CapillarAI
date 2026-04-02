@@ -60,6 +60,12 @@ def get_validator():
     return ValidatePortraitUseCase(get_face_detector())
 
 
+def get_generate_hair_use_case():
+    """Application layer: delegates to ImageGeneratorPort (HairInpaintGenerator)."""
+    from app.application.generate_hair import GenerateHairUseCase
+    return GenerateHairUseCase(get_generator())
+
+
 def queue_depth() -> int:
     """Number of inference requests currently waiting or running."""
     return _pending
@@ -90,12 +96,12 @@ async def run_inference(image_bgr, face_landmarks):
     try:
         async with _semaphore:
             loop = asyncio.get_event_loop()
-            generator = get_generator()
+            use_case = get_generate_hair_use_case()
             try:
                 result = await asyncio.wait_for(
                     loop.run_in_executor(
                         _executor,
-                        generator.generate,
+                        use_case.execute,
                         image_bgr,
                         face_landmarks,
                     ),
