@@ -1,17 +1,34 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 
-from app.api.common import read_image_bgr
+from app.api.rate_limit_ext import limiter
+from app.api.common import MAX_UPLOAD_MB
+from app.config import get_settings
 from app.deps import get_validator
 
-router = APIRouter()
+_settings = get_settings()
+router = APIRouter(prefix="/upload", tags=["v1"])
 
 
-@router.post("/upload")
-async def upload(file: UploadFile = File(...)):
-    """
-    Valida la foto tal cual se subiría a /generate (misma comprobación facial sobre la original).
-    No aplica rembg aquí: /generate decide fondo tras validar.
-    """
+@router.post(
+    "",
+    summary="Validar retrato",
+    description=(
+        "Comprueba rostro, encuadre y luz (misma lógica que antes de generar). "
+        f"Máximo **{MAX_UPLOAD_MB} MB** por imagen."
+    ),
+    responses={
+        200: {"description": "Imagen válida para generación"},
+        400: {"description": "Validación fallida (mensaje en `detail`)"},
+        401: {"description": "API key faltante o inválida"},
+        413: {"description": "Archivo demasiado grande"},
+        429: {"description": "Rate limit excedido"},
+    },
+)
+@limiter.limit(_settings.rate_limit_upload)
+async def upload(request: Request, file: UploadFile = File(...)):
+    from app.api.common import read_image_bgr
+
     img = await read_image_bgr(file)
 
     try:
@@ -19,4 +36,4 @@ async def upload(file: UploadFile = File(...)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    return {"message": "Imagen válida", "valid": True}
+    return JSONResponse({"message": "Imagen válida", "valid": True})

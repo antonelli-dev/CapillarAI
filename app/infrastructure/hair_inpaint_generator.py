@@ -130,7 +130,19 @@ class HairInpaintGenerator:
             "seamless transition, photorealistic, subtle hair strands"
         )
 
-    def generate(self, image_bgr: np.ndarray, face_landmarks) -> Image.Image:
+    def _make_generator(self, seed: int | None):
+        if seed is None:
+            return None
+        g = torch.Generator(device=self.device)
+        g.manual_seed(int(seed) & 0x7FFFFFFF)
+        return g
+
+    def generate(
+        self,
+        image_bgr: np.ndarray,
+        face_landmarks,
+        seed: int | None = None,
+    ) -> Image.Image:
         lighting = analyze_scalp_lighting(image_bgr, face_landmarks)
         severity = lighting.severity
 
@@ -204,6 +216,10 @@ class HairInpaintGenerator:
         if self._ip_adapter_loaded:
             call_kwargs["ip_adapter_image"] = pil
 
+        gen = self._make_generator(seed)
+        if gen is not None:
+            call_kwargs["generator"] = gen
+
         result = self.pipe(**call_kwargs).images[0]
 
         # Second pass: hairline band — skip on huge masks or extreme severity (reduces color drift).
@@ -242,6 +258,9 @@ class HairInpaintGenerator:
                 }
                 if self._ip_adapter_loaded:
                     refine_kwargs["ip_adapter_image"] = r_small
+                gen2 = self._make_generator(seed)
+                if gen2 is not None:
+                    refine_kwargs["generator"] = gen2
                 result = self.pipe(**refine_kwargs).images[0]
             else:
                 logger.debug("Segundo paso omitido: banda línea pelo demasiado pequeña")

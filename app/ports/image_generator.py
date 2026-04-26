@@ -5,5 +5,10 @@ from PIL import Image
 
 
 class ImageGeneratorPort(Protocol):
-    def generate(self, image_bgr: np.ndarray, face_landmarks: Any) -> Image.Image:
+    def generate(
+        self,
+        image_bgr: np.ndarray,
+        face_landmarks: Any,
+        seed: int | None = None,
+    ) -> Image.Image:
         ...

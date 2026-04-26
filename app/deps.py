@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from typing import TYPE_CHECKING
 
 from fastapi import HTTPException
@@ -71,7 +72,7 @@ def queue_depth() -> int:
     return _pending
 
 
-async def run_inference(image_bgr, face_landmarks):
+async def run_inference(image_bgr, face_landmarks, seed: int | None = None):
     """
     Run hair inpainting on the GPU worker thread.
 
@@ -101,9 +102,12 @@ async def run_inference(image_bgr, face_landmarks):
                 result = await asyncio.wait_for(
                     loop.run_in_executor(
                         _executor,
-                        use_case.execute,
-                        image_bgr,
-                        face_landmarks,
+                        partial(
+                            use_case.execute,
+                            image_bgr,
+                            face_landmarks,
+                            seed=seed,
+                        ),
                     ),
                     timeout=INFERENCE_TIMEOUT,
                 )
@@ -115,3 +119,129 @@ async def run_inference(image_bgr, face_landmarks):
             return result
     finally:
         _pending -= 1
+
+
+# ── New SaaS Infrastructure ─────────────────────────────────────────────────
+
+# Job Repository (SQLite)
+_job_repository = None
+
+def get_job_repository():
+    """SQLite implementation of JobRepositoryPort."""
+    global _job_repository
+    if _job_repository is None:
+        from app.infrastructure.sqlite_job_repository import SQLiteJobRepository
+        _job_repository = SQLiteJobRepository(db_path="jobs.db")
+    return _job_repository
+
+
+# Storage (Local filesystem - replace with S3/MinIO for production)
+_storage = None
+
+def get_storage():
+    """StoragePort implementation. Use LocalStorage for dev, S3Storage for prod."""
+    global _storage
+    if _storage is None:
+        # For MVP: local filesystem storage
+        # For production: implement S3Storage or MinIOStorage
+        from app.infrastructure.local_storage import LocalStorage
+        _storage = LocalStorage(base_path="./storage")
+    return _storage
+
+
+# Donor Analyzer (CPU-only)
+_donor_analyzer = None
+
+def get_donor_analyzer():
+    """OpenCV-based donor area analyzer (no GPU required)."""
+    global _donor_analyzer
+    if _donor_analyzer is None:
+        from app.infrastructure.opencv_donor_analyzer import OpenCVDonorAnalyzer
+        _donor_analyzer = OpenCVDonorAnalyzer()
+    return _donor_analyzer
+
+
+# PDF Generator
+_pdf_generator = None
+
+def get_pdf_generator():
+    """ReportLab PDF generator for medical reports."""
+    global _pdf_generator
+    if _pdf_generator is None:
+        from app.infrastructure.pdf_reportlab_generator import ReportLabPDFGenerator
+        _pdf_generator = ReportLabPDFGenerator()
+    return _pdf_generator
+
+
+# Preset Repository (SQLite, shared with jobs DB)
+_preset_repository = None
+
+def get_preset_repository():
+    """SQLite implementation of PresetRepositoryPort."""
+    global _preset_repository
+    if _preset_repository is None:
+        from app.infrastructure.sqlite_preset_repository import SQLitePresetRepository
+        _preset_repository = SQLitePresetRepository(db_path="jobs.db")
+    return _preset_repository
+
+
+# Webhook Dispatcher
+_webhook_dispatcher = None
+
+def get_webhook_dispatcher():
+    """HTTP webhook dispatcher for async notifications."""
+    global _webhook_dispatcher
+    if _webhook_dispatcher is None:
+        from app.infrastructure.http_webhook_dispatcher import HTTPWebhookDispatcher
+        _webhook_dispatcher = HTTPWebhookDispatcher()
+    return _webhook_dispatcher
+
+
+# ── SaaS Use Cases ────────────────────────────────────────────────────────────
+
+def get_create_job_use_case():
+    """CreateSimulationJobUseCase for async job creation."""
+    from app.application.create_simulation_job import CreateSimulationJobUseCase
+    return CreateSimulationJobUseCase(
+        job_repository=get_job_repository(),
+        storage=get_storage(),
+    )
+
+
+def get_process_job_use_case():
+    """ProcessSimulationJobUseCase for job execution."""
+    from app.application.process_simulation_job import ProcessSimulationJobUseCase
+    return ProcessSimulationJobUseCase(
+        job_repository=get_job_repository(),
+        storage=get_storage(),
+        image_generator=get_generator(),
+        donor_analyzer=get_donor_analyzer(),
+        pdf_generator=get_pdf_generator(),
+        webhook_dispatcher=get_webhook_dispatcher(),
+    )
+
+
+def get_analyze_donor_use_case():
+    """AnalyzeDonorAreaUseCase for donor viability analysis."""
+    from app.application.analyze_donor_area import AnalyzeDonorAreaUseCase
+    return AnalyzeDonorAreaUseCase(
+        donor_analyzer=get_donor_analyzer(),
+        storage=get_storage(),
+    )
+
+
+def get_manage_presets_use_case():
+    """ManagePresetsUseCase for hairline preset CRUD."""
+    from app.application.manage_presets import ManagePresetsUseCase
+    return ManagePresetsUseCase(
+        preset_repository=get_preset_repository(),
+    )
+
+
+def get_gdpr_management_use_case():
+    """GDPRDataManagementUseCase for data export/deletion."""
+    from app.application.gdpr_data_management import GDPRDataManagementUseCase
+    return GDPRDataManagementUseCase(
+        job_repository=get_job_repository(),
+        storage=get_storage(),
+    )

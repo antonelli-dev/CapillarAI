@@ -4,6 +4,7 @@ from fastapi import HTTPException, UploadFile
 
 # 10 MB — enough for any reasonable portrait; rejects abuse/accidents early.
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_UPLOAD_MB = MAX_UPLOAD_BYTES // (1024 * 1024)
 
 
 async def read_image_bgr(file: UploadFile) -> np.ndarray:

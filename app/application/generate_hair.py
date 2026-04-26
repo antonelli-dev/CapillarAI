@@ -7,5 +7,10 @@ class GenerateHairUseCase:
     def __init__(self, generator: ImageGeneratorPort):
         self.generator = generator
 
-    def execute(self, image_bgr, face_landmarks) -> Image.Image:
-        return self.generator.generate(image_bgr, face_landmarks)
+    def execute(
+        self,
+        image_bgr,
+        face_landmarks,
+        seed: int | None = None,
+    ) -> Image.Image:
+        return self.generator.generate(image_bgr, face_landmarks, seed=seed)
